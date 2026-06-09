@@ -27,11 +27,11 @@ jobs:
       with:
         packages: 'platforms;android-33 build-tools;33.0.0'
 
-    - name: Make gradlew executable
-      run: chmod +x gradlew
+    - name: Setup Gradle
+      uses: gradle/gradle-build-action@v2
 
     - name: Build Debug APK
-      run: ./gradlew :app:assembleDebug
+      run: gradle :app:assembleDebug
 
     - name: Upload APK
       uses: actions/upload-artifact@v4

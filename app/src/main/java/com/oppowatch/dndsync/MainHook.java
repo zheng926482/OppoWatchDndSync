@@ -22,6 +22,7 @@ public class MainHook implements IXposedHookLoadPackage {
 
     private static final String TAG = "OppoWatchDndSync";
     private static final String[] TARGET_PACKAGES = {
+            "com.heytap.health",
             "com.heytap.wearable.health",
             "com.oppo.watch",
             "com.oppo.health",

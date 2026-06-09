@@ -16,6 +16,7 @@
 - `com.oppo.watch`
 - `com.oppo.health`
 - `com.oplus.wearable.health`
+- `com.heytap.health`
 
 ## 构建说明
 

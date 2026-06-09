@@ -1,17 +1,11 @@
 package com.oppowatch.dndsync;
 
 import android.app.NotificationManager;
-import android.content.ContentResolver;
 import android.content.Context;
-import android.content.Intent;
-import android.database.ContentObserver;
 import android.media.AudioManager;
-import android.net.Uri;
-import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
-import java.lang.reflect.Method;
 import java.util.concurrent.atomic.AtomicBoolean;
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
@@ -29,8 +23,6 @@ public class MainHook implements IXposedHookLoadPackage {
             "com.oppo.health",
             "com.oplus.wearable.health"
     };
-    private static final String ZEN_MODE = "zen_mode";
-    private static final int ZEN_MODE_OFF = 0;
 
     private Context appContext;
     private NotificationManager notificationManager;
@@ -43,8 +35,6 @@ public class MainHook implements IXposedHookLoadPackage {
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
-        XposedBridge.log(TAG + " 检测到包: " + lpparam.packageName);
-        
         boolean isTarget = false;
         for (String pkg : TARGET_PACKAGES) {
             if (lpparam.packageName.equals(pkg)) {
@@ -53,108 +43,203 @@ public class MainHook implements IXposedHookLoadPackage {
             }
         }
         
-        if (!isTarget) {
-            return;
-        }
+        if (!isTarget) return;
 
-        XposedBridge.log(TAG + " ========== 初始化，包名: " + lpparam.packageName + " ==========");
+        XposedBridge.log(TAG + " ========== 初始化: " + lpparam.packageName + " ==========");
 
         try {
             appContext = (Context) XposedHelpers.callStaticMethod(
                     XposedHelpers.findClass("android.app.ActivityThread", lpparam.classLoader),
                     "currentApplication"
             );
-            XposedBridge.log(TAG + " Context 获取成功");
         } catch (Throwable e) {
-            XposedBridge.log(TAG + " 获取Context失败: " + e.getMessage());
+            XposedBridge.log(TAG + " 获取Context失败");
         }
 
-        if (appContext == null) {
-            XposedBridge.log(TAG + " Context 为空");
-        }
-
-        try {
-            if (appContext != null) {
+        if (appContext != null) {
+            try {
                 notificationManager = (NotificationManager) appContext.getSystemService(Context.NOTIFICATION_SERVICE);
                 audioManager = (AudioManager) appContext.getSystemService(Context.AUDIO_SERVICE);
+            } catch (Throwable e) {
+                XposedBridge.log(TAG + " 获取服务失败");
             }
-        } catch (Throwable e) {
-            XposedBridge.log(TAG + " 获取服务失败: " + e.getMessage());
         }
 
-        try {
-            hookAllMethods(lpparam.classLoader);
-            XposedBridge.log(TAG + " 方法 Hook 完成");
-        } catch (Throwable e) {
-            XposedBridge.log(TAG + " Hook 失败: " + e.getMessage());
-        }
-        
+        hookAllCallbacks(lpparam.classLoader);
         XposedBridge.log(TAG + " ========== 初始化完成 ==========");
     }
 
-    private void hookAllMethods(ClassLoader cl) {
-        // Hook OPPO 手表相关的所有类
-        String[] targetClasses = {
+    private void hookAllCallbacks(ClassLoader cl) {
+        // Hook DeviceProvider 类
+        String[] deviceProviderClasses = {
             "com.oplus.wearable.provider.DeviceProvider",
-            "com.heytap.wearable.provider.WatchProvider",
-            "com.oplus.wearable.device.DeviceManager",
-            "com.heytap.wearable.device.DeviceManager",
-            "com.oplus.wearable.transport.WatchSyncManager",
-            "com.heytap.wearable.transport.WatchSyncManager"
+            "com.heytap.wearable.provider.WatchProvider"
         };
 
-        for (String className : targetClasses) {
+        for (String className : deviceProviderClasses) {
             try {
                 Class<?> clazz = XposedHelpers.findClass(className, cl);
-                if (clazz != null) {
-                    Method[] methods = clazz.getDeclaredMethods();
-                    XposedBridge.log(TAG + " 扫描类: " + className + " (" + methods.length + " 个方法)");
-                    
-                    for (Method method : methods) {
-                        String methodName = method.getName();
-                        Class<?>[] paramTypes = method.getParameterTypes();
+                hookProviderMethods(clazz);
+                XposedBridge.log(TAG + " 已Hook类: " + className);
+            } catch (Throwable e) {
+                // 类不存在或其他错误，继续
+            }
+        }
+
+        // Hook DeviceManager 类
+        String[] deviceManagerClasses = {
+            "com.oplus.wearable.device.DeviceManager",
+            "com.heytap.wearable.device.DeviceManager"
+        };
+
+        for (String className : deviceManagerClasses) {
+            try {
+                Class<?> clazz = XposedHelpers.findClass(className, cl);
+                hookManagerMethods(clazz);
+                XposedBridge.log(TAG + " 已Hook类: " + className);
+            } catch (Throwable e) {
+                // 类不存在或其他错误，继续
+            }
+        }
+    }
+
+    private void hookProviderMethods(Class<?> providerClass) {
+        // Hook boolean 参数的方法 - DND 和铃声回调
+        String[] booleanMethods = {
+            "onSilentModeChanged",
+            "onDndChanged", 
+            "onMuteModeChanged",
+            "onRingerModeChanged"
+        };
+
+        for (String methodName : booleanMethods) {
+            try {
+                XposedHelpers.findAndHookMethod(providerClass, methodName, boolean.class, new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                        boolean value = (boolean) param.args[0];
+                        XposedBridge.log(TAG + " [Hook] " + param.method.getName() + "(" + value + ")");
                         
-                        // 查找与 DND/静音/铃声相关的方法
-                        if (methodName.contains("Silent") || methodName.contains("Dnd") || 
-                            methodName.contains("Mute") || methodName.contains("Ringer") ||
-                            methodName.contains("Ringer") || methodName.contains("changed") ||
-                            methodName.contains("Changed")) {
-                            
-                            XposedBridge.log(TAG + " 发现目标方法: " + className + "#" + methodName + 
-                                " 参数:" + paramTypes.length);
-                            
-                            // Hook 该方法
-                            try {
-                                if (paramTypes.length == 1 && (paramTypes[0] == boolean.class || 
-                                    paramTypes[0] == int.class)) {
-                                    
-                                    XposedHelpers.findAndHookMethod(clazz, methodName, paramTypes[0], 
-                                        new XC_MethodHook() {
-                                            @Override
-                                            protected void beforeHookedMethod(MethodHookParam param) {
-                                                XposedBridge.log(TAG + " =====> 方法被调用: " + 
-                                                    param.method.getName() + ", 参数: " + param.args[0]);
-                                            }
-                                            
-                                            @Override
-                                            protected void afterHookedMethod(MethodHookParam param) {
-                                                XposedBridge.log(TAG + " =====> 方法执行完毕: " + 
-                                                    param.method.getName());
-                                            }
-                                        });
-                                    XposedBridge.log(TAG + " 成功 Hook: " + methodName);
-                                }
-                            } catch (Throwable e) {
-                                XposedBridge.log(TAG + " Hook 失败 " + methodName + ": " + e.getMessage());
-                            }
+                        // 根据方法名做相应处理
+                        String method = param.method.getName();
+                        if (method.contains("Silent") || method.contains("Dnd") || method.contains("Mute")) {
+                            handleDndChange(value);
+                        } else if (method.contains("Ringer")) {
+                            handleRingerChange(value);
                         }
                     }
-                }
-            } catch (ClassNotFoundException e) {
-                // 类不存在，继续下一个
+                });
+                XposedBridge.log(TAG + " Hook成功: " + methodName);
             } catch (Throwable e) {
-                XposedBridge.log(TAG + " 处理类失败 " + className + ": " + e.getMessage());
+                // 方法不存在，继续尝试其他方法
             }
+        }
+
+        // Hook int 参数的方法
+        String[] intMethods = {
+            "onRingerModeChanged",
+            "onAudioModeChanged"
+        };
+
+        for (String methodName : intMethods) {
+            try {
+                XposedHelpers.findAndHookMethod(providerClass, methodName, int.class, new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                        int value = (int) param.args[0];
+                        XposedBridge.log(TAG + " [Hook] " + param.method.getName() + "(" + value + ")");
+                        
+                        if (param.method.getName().contains("Ringer")) {
+                            handleRingerChangeInt(value);
+                        }
+                    }
+                });
+                XposedBridge.log(TAG + " Hook成功: " + methodName);
+            } catch (Throwable e) {
+                // 方法不存在，继续尝试其他方法
+            }
+        }
+    }
+
+    private void hookManagerMethods(Class<?> managerClass) {
+        // Hook set 类方法
+        String[] setMethods = {
+            "setPhoneSilentMode",
+            "setPhoneDoNotDisturb",
+            "setPhoneMuteMode",
+            "setPhoneVibrateMode",
+            "setMute",
+            "setVibrate",
+            "setSilentMode",
+            "setVibrateMode"
+        };
+
+        for (String methodName : setMethods) {
+            try {
+                XposedHelpers.findAndHookMethod(managerClass, methodName, boolean.class, new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                        boolean value = (boolean) param.args[0];
+                        XposedBridge.log(TAG + " [Hook-Set] " + param.method.getName() + "(" + value + ")");
+                    }
+                });
+                XposedBridge.log(TAG + " Hook成功: " + methodName);
+            } catch (Throwable e) {
+                // 方法不存在
+            }
+        }
+    }
+
+    private void handleDndChange(boolean dndOn) {
+        if (syncingDndFromPhone.get()) return;
+        
+        syncingDndFromWatch.set(true);
+        try {
+            XposedBridge.log(TAG + " 处理DND变化: " + dndOn);
+            
+            if (notificationManager != null && audioManager != null) {
+                int filter = dndOn ? NotificationManager.INTERRUPTION_FILTER_NONE : 
+                            NotificationManager.INTERRUPTION_FILTER_ALL;
+                if (android.os.Build.VERSION.SDK_INT >= 23) {
+                    notificationManager.setInterruptionFilter(filter);
+                    XposedBridge.log(TAG + " 已设置中断过滤: " + filter);
+                }
+            }
+        } finally {
+            syncingDndFromWatch.set(false);
+        }
+    }
+
+    private void handleRingerChange(boolean silent) {
+        if (syncingRingerFromPhone.get()) return;
+        
+        syncingRingerFromWatch.set(true);
+        try {
+            XposedBridge.log(TAG + " 处理铃声变化: " + silent);
+            
+            if (audioManager != null) {
+                int mode = silent ? AudioManager.RINGER_MODE_SILENT : AudioManager.RINGER_MODE_NORMAL;
+                audioManager.setRingerMode(mode);
+                XposedBridge.log(TAG + " 已设置铃声模式: " + mode);
+            }
+        } finally {
+            syncingRingerFromWatch.set(false);
+        }
+    }
+
+    private void handleRingerChangeInt(int ringerMode) {
+        if (syncingRingerFromPhone.get()) return;
+        
+        syncingRingerFromWatch.set(true);
+        try {
+            XposedBridge.log(TAG + " 处理铃声变化(int): " + ringerMode);
+            
+            if (audioManager != null) {
+                audioManager.setRingerMode(ringerMode);
+                XposedBridge.log(TAG + " 已设置铃声模式: " + ringerMode);
+            }
+        } finally {
+            syncingRingerFromWatch.set(false);
         }
     }
 }

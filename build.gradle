@@ -1,11 +1,5 @@
-buildscript {
-    repositories {
-        google()
-        mavenCentral()
-    }
-    dependencies {
-        classpath 'com.android.tools.build:gradle:7.4.2'
-    }
+plugins {
+    id 'com.android.application' version '8.1.0' apply false
 }
 
 allprojects {
@@ -14,8 +8,4 @@ allprojects {
         mavenCentral()
         maven { url 'https://api.xposed.info/' }
     }
-}
-
-task clean(type: Delete) {
-    delete rootProject.buildDir
 }

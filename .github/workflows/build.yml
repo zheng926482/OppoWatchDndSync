@@ -5,6 +5,9 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
 
+env:
+  ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -19,8 +22,10 @@ jobs:
         java-version: '11'
         distribution: 'temurin'
 
-    - name: Setup Android SDK
+    - name: Set up Android SDK
       uses: android-actions/setup-android@v3
+      with:
+        packages: 'platforms;android-33 build-tools;30.0.3'
 
     - name: Make gradlew executable
       run: chmod +x gradlew

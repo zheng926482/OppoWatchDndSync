@@ -41,66 +41,108 @@ public class MainHook implements IXposedHookLoadPackage {
     private AtomicBoolean syncingRingerFromPhone = new AtomicBoolean(false);
     private AtomicBoolean syncingRingerFromWatch = new AtomicBoolean(false);
 
-    @Override
-    public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
-        XposedBridge.log(TAG + " 检测到包: " + lpparam.packageName);
-        
-        boolean isTarget = false;
-        for (String pkg : TARGET_PACKAGES) {
-            if (lpparam.packageName.equals(pkg)) {
-                isTarget = true;
-                break;
-            }
+@Override
+public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
+    XposedBridge.log(TAG + " 检测到包: " + lpparam.packageName);
+    
+    boolean isTarget = false;
+    for (String pkg : TARGET_PACKAGES) {
+        if (lpparam.packageName.equals(pkg)) {
+            isTarget = true;
+            break;
         }
-        
-        if (!isTarget) {
-            XposedBridge.log(TAG + " 跳过非目标包: " + lpparam.packageName);
-            return;
-        }
+    }
+    
+    if (!isTarget) {
+        XposedBridge.log(TAG + " 跳过非目标包: " + lpparam.packageName);
+        return;
+    }
 
-        XposedBridge.log(TAG + " ========== 初始化，包名: " + lpparam.packageName + " ==========");
+    XposedBridge.log(TAG + " ========== 初始化，包名: " + lpparam.packageName + " ==========");
 
+    try {
+        // 方法1: 通过 ActivityThread 获取
         try {
             appContext = (Context) XposedHelpers.callStaticMethod(
                     XposedHelpers.findClass("android.app.ActivityThread", lpparam.classLoader),
                     "currentApplication"
             );
-            if (appContext == null) {
-                XposedBridge.log(TAG + " ActivityThread 获取失败，尝试备用方法");
-                appContext = (Context) XposedHelpers.getObjectField(lpparam, "application");
-            }
-            XposedBridge.log(TAG + " Context 获取成功: " + (appContext != null));
+            XposedBridge.log(TAG + " 通过 ActivityThread 获取 Context 成功");
         } catch (Throwable e) {
-            XposedBridge.log(TAG + " 获取Context失败: " + e.getMessage());
-            e.printStackTrace();
-            return;
+            XposedBridge.log(TAG + " ActivityThread 方法失败: " + e.getMessage());
+            appContext = null;
         }
 
+        // 方法2: 通过 LoadPackageParam 获取
         if (appContext == null) {
-            XposedBridge.log(TAG + " Context为空，无法继续");
-            return;
+            try {
+                Object app = XposedHelpers.getObjectField(lpparam, "application");
+                if (app instanceof Context) {
+                    appContext = (Context) app;
+                    XposedBridge.log(TAG + " 通过 LoadPackageParam 获取 Context 成功");
+                }
+            } catch (Throwable e) {
+                XposedBridge.log(TAG + " LoadPackageParam 方法失败: " + e.getMessage());
+            }
         }
 
+        // 方法3: 使用包名创建 Context
+        if (appContext == null) {
+            try {
+                Context systemContext = (Context) XposedHelpers.callStaticMethod(
+                        XposedHelpers.findClass("android.app.ActivityThread", lpparam.classLoader),
+                        "currentActivityThread"
+                );
+                if (systemContext != null) {
+                    appContext = (Context) XposedHelpers.callMethod(systemContext, "getContext");
+                    XposedBridge.log(TAG + " 通过 currentActivityThread 获取 Context 成功");
+                }
+            } catch (Throwable e) {
+                XposedBridge.log(TAG + " currentActivityThread 方法失败: " + e.getMessage());
+            }
+        }
+
+        XposedBridge.log(TAG + " Context 获取结果: " + (appContext != null ? "成功" : "失败"));
+    } catch (Throwable e) {
+        XposedBridge.log(TAG + " 获取Context异常: " + e.getMessage());
+        e.printStackTrace();
+    }
+
+    if (appContext == null) {
+        XposedBridge.log(TAG + " Context 为空，仅 Hook 回调，不监听 Settings 变化");
+        // 即使没有 Context，也继续 Hook 回调
+    }
+
+    try {
         notificationManager = (NotificationManager) appContext.getSystemService(Context.NOTIFICATION_SERVICE);
         audioManager = (AudioManager) appContext.getSystemService(Context.AUDIO_SERVICE);
 
         XposedBridge.log(TAG + " NotificationManager: " + (notificationManager != null));
         XposedBridge.log(TAG + " AudioManager: " + (audioManager != null));
 
-        registerPhoneDndObserver();
-        XposedBridge.log(TAG + " DND 观察器已注册");
-        
+        if (appContext != null) {
+            registerPhoneDndObserver();
+            XposedBridge.log(TAG + " DND 观察器已注册");
+            
+            registerRingerModeObserver();
+            XposedBridge.log(TAG + " 铃声观察器已注册");
+        }
+    } catch (Throwable e) {
+        XposedBridge.log(TAG + " 初始化服务失败: " + e.getMessage());
+    }
+
+    try {
         hookWatchDndCallback(lpparam.classLoader);
         XposedBridge.log(TAG + " 手表 DND 回调已 Hook");
         
-        registerRingerModeObserver();
-        XposedBridge.log(TAG + " 铃声观察器已注册");
-        
         hookWatchRingerCallback(lpparam.classLoader);
         XposedBridge.log(TAG + " 手表铃声回调已 Hook");
-        
-        XposedBridge.log(TAG + " ========== 初始化完成 ==========");
+    } catch (Throwable e) {
+        XposedBridge.log(TAG + " Hook 回调失败: " + e.getMessage());
     }
+    
+    XposedBridge.log(TAG + " ========== 初始化完成 ==========");
+}
 
     // 勿扰监听
     private void registerPhoneDndObserver() {

@@ -7,18 +7,26 @@
         android:label="OppoWatchDndSync"
         android:supportsRtl="true">
 
+        <!-- Xposed 模块声明 -->
         <meta-data
             android:name="xposedmodule"
             android:value="true" />
         <meta-data
             android:name="xposeddescription"
-            android:value="OPPO Watch 勿扰双向同步" />
+            android:value="非OPPO手机 ↔ OPPO手表 勿扰双向同步（自动作用域）" />
         <meta-data
             android:name="xposedminversion"
             android:value="82" />
+
+        <!-- 静态 Hook 入口（自动加载） -->
         <meta-data
             android:name="xposedhook"
             android:value="com.oppowatch.dndsync.MainHook" />
+
+        <!-- ✅ 静态作用域（自动勾选 欢太健康/OPPO健康） -->
+        <meta-data
+            android:name="xposedscope"
+            android:value="com.heytap.health" />
 
     </application>
 

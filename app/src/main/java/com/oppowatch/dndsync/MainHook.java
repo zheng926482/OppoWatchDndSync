@@ -1,18 +1,12 @@
-package com.oppowatch.dndsync;
-
-import android.app.NotificationManager;
-import android.content.ContentResolver;
+import android.app.Application;
 import android.content.Context;
-import android.content.Intent;
-import android.content.SharedPreferences;
-import android.database.ContentObserver;
-import android.media.AudioManager;
-import android.net.Uri;
+import android.content.ContentObserver;
 import android.os.Build;
 import android.os.Handler;
-import android.os.Looper;
 import android.provider.Settings;
-import java.util.concurrent.atomic.AtomicBoolean;
+import android.app.NotificationManager;
+import android.app.NotificationManager.INTERRUPTION_FILTER_ALARMS;
+import android.app.NotificationManager.INTERRUPTION_FILTER_NONE;
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
@@ -20,369 +14,137 @@ import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 public class MainHook implements IXposedHookLoadPackage {
-
-    private static final String TAG = "OppoWatchDndSync";
-    private static final String ZEN_MODE = "zen_mode";
-    private static final int ZEN_MODE_OFF = 0;
-    private static final String PREFS_NAME = "oppo_watch_sync";
-
-    private static Context systemContext;
-    private static ContentResolver contentResolver;
-    private static NotificationManager notificationManager;
-    private static AudioManager audioManager;
-    private static SharedPreferences prefs;
-    
-    private static AtomicBoolean hookInstalled = new AtomicBoolean(false);
-    private static AtomicBoolean syncingFromWatch = new AtomicBoolean(false);
+    // 欢太健康目标包名
+    private static final String TARGET_PKG = "com.heytap.health";
+    private Context appCtx;
+    private boolean isSyncing = false; // 防循环同步锁
 
     @Override
-    public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
-        // 在系统进程中安装 Hook
-        if ("android".equals(lpparam.packageName)) {
-            if (hookInstalled.getAndSet(true)) {
-                return;
-            }
-            
-            XposedBridge.log(TAG + " 在系统进程中安装 Hook");
-            
-            // 获取系统上下文
-            try {
-                systemContext = (Context) XposedHelpers.callStaticMethod(
-                        XposedHelpers.findClass("android.app.ActivityThread", lpparam.classLoader),
-                        "currentApplication"
-                );
-                if (systemContext != null) {
-                    contentResolver = systemContext.getContentResolver();
-                    notificationManager = (NotificationManager) systemContext.getSystemService(Context.NOTIFICATION_SERVICE);
-                    audioManager = (AudioManager) systemContext.getSystemService(Context.AUDIO_SERVICE);
-                    
-                    // 创建共享存储用于跨进程通信
-                    try {
-                        prefs = systemContext.getSharedPreferences(PREFS_NAME, Context.MODE_WORLD_READABLE | Context.MODE_WORLD_WRITEABLE);
-                    } catch (Throwable e) {
-                        prefs = systemContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
-                    }
-                    
-                    XposedBridge.log(TAG + " 获取系统服务成功");
+    public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
+        String pkg = lpparam.packageName;
+        // 只Hook OPPO健康APP
+        if (!pkg.equals(TARGET_PKG)) return;
+        XposedBridge.log("===== OppoWatchDndSync 已挂载目标APP =====");
+
+        // 1. 伪装OPPO设备，绕过机型校验（关键修复点）
+        fakeOppoDeviceInfo(lpparam);
+
+        // 2. 获取APP上下文
+        Application app = (Application) XposedHelpers.callStaticMethod(
+                XposedHelpers.findClass("android.app.ActivityThread", null),
+                "currentApplication"
+        );
+        appCtx = app.getApplicationContext();
+
+        // 3. 监听系统勿扰变化，同步到手表（手机→手表）
+        listenSystemZenMode();
+
+        // 4. Hook手表下发勿扰指令，同步回手机（手表→手机）
+        hookWatchZenCallback(lpparam);
+    }
+
+    // -------------------------- 1. 伪装OPPO机型，绕过APP校验 --------------------------
+    private void fakeOppoDeviceInfo(XC_LoadPackage.LoadPackageParam lpparam) {
+        // 伪造Build硬件标识
+        XposedHelpers.setStaticObjectField(Build.class, "BRAND", "OPPO");
+        XposedHelpers.setStaticObjectField(Build.class, "MANUFACTURER", "OPPO");
+        XposedHelpers.setStaticObjectField(Build.class, "PRODUCT", "CPH2487");
+        XposedHelpers.setStaticObjectField(Build.class, "MODEL", "OPPO Find X6");
+
+        // Hook机型校验方法，强制返回OPPO
+        try {
+            Class<?> deviceCheckCls = XposedHelpers.findClass("com.heytap.wearable.utils.DeviceUtils", lpparam.classLoader);
+            XposedHelpers.findAndHookMethod(deviceCheckCls, "isOppoDevice", new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    param.setResult(true);
                 }
-            } catch (Throwable e) {
-                XposedBridge.log(TAG + " 获取系统服务失败: " + e.getMessage());
-            }
-            
-            hookSystemFramework(lpparam);
-        }
-        
-        // 在 OPPO 健康应用中监听回调
-        if ("com.heytap.health".equals(lpparam.packageName)) {
-            XposedBridge.log(TAG + " ========== 扫描 com.heytap.health ==========");
-            hookOppoHealthCallbacks(lpparam);
+            });
+            XposedBridge.log("机型伪装完成，已绕过OPPO设备校验");
+        } catch (Throwable e) {
+            XposedBridge.log("DeviceUtils 类未找到，跳过机型Hook：" + e.getMessage());
         }
     }
 
-    private void hookSystemFramework(XC_LoadPackage.LoadPackageParam lpparam) {
-        try {
-            // Hook NotificationManager.setInterruptionFilter
-            Class<?> nmClass = XposedHelpers.findClass("android.app.NotificationManager", lpparam.classLoader);
-            XposedHelpers.findAndHookMethod(nmClass, "setInterruptionFilter", int.class, new XC_MethodHook() {
-                @Override
-                protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                    if (syncingFromWatch.get()) {
-                        return;
-                    }
-                    
-                    int filter = (int) param.args[0];
-                    boolean isDndOn = (filter == NotificationManager.INTERRUPTION_FILTER_NONE);
-                    XposedBridge.log(TAG + " [手机] DND 变化: " + isDndOn);
-                    
-                    syncDndToWatch(isDndOn);
-                }
-            });
-            XposedBridge.log(TAG + " Hook NotificationManager.setInterruptionFilter 成功");
-        } catch (Throwable e) {
-            XposedBridge.log(TAG + " Hook setInterruptionFilter 失败: " + e.getMessage());
-        }
+    // -------------------------- 2. 监听系统勿扰，下发至手表 syncPhoneZenMode --------------------------
+    private void listenSystemZenMode() {
+        ContentObserver zenObserver = new ContentObserver(new Handler(appCtx.getMainLooper())) {
+            @Override
+            public void onChange(boolean selfChange) {
+                super.onChange(selfChange);
+                if (isSyncing) return; // 防止手表回调触发死循环
 
-        try {
-            // Hook AudioManager.setRingerMode
-            Class<?> amClass = XposedHelpers.findClass("android.media.AudioManager", lpparam.classLoader);
-            XposedHelpers.findAndHookMethod(amClass, "setRingerMode", int.class, new XC_MethodHook() {
-                @Override
-                protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                    if (syncingFromWatch.get()) {
-                        return;
-                    }
-                    
-                    int mode = (int) param.args[0];
-                    XposedBridge.log(TAG + " [手机] 铃声模式变化: " + mode);
-                    
-                    syncRingerToWatch(mode);
-                }
-            });
-            XposedBridge.log(TAG + " Hook AudioManager.setRingerMode 成功");
-        } catch (Throwable e) {
-            XposedBridge.log(TAG + " Hook setRingerMode 失败: " + e.getMessage());
-        }
+                NotificationManager nm = (NotificationManager) appCtx.getSystemService(Context.NOTIFICATION_SERVICE);
+                int filter = nm.getCurrentInterruptionFilter();
+                boolean dndEnable = filter == INTERRUPTION_FILTER_NONE || filter == INTERRUPTION_FILTER_ALARMS;
 
-        try {
-            // Hook Settings.Global.putInt
-            Class<?> settingsGlobalClass = XposedHelpers.findClass("android.provider.Settings$Global", lpparam.classLoader);
-            XposedHelpers.findAndHookMethod(settingsGlobalClass, "putInt", ContentResolver.class, String.class, int.class, new XC_MethodHook() {
-                @Override
-                protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                    if (syncingFromWatch.get()) {
-                        return;
-                    }
-                    
-                    String key = (String) param.args[1];
-                    int value = (int) param.args[2];
-                    
-                    if (ZEN_MODE.equals(key)) {
-                        boolean isDndOn = (value != ZEN_MODE_OFF);
-                        XposedBridge.log(TAG + " [手机] zen_mode 变化: " + isDndOn);
-                        syncDndToWatch(isDndOn);
-                    }
-                }
-            });
-            XposedBridge.log(TAG + " Hook Settings.Global.putInt 成功");
-        } catch (Throwable e) {
-            XposedBridge.log(TAG + " Hook Settings.Global.putInt 失败: " + e.getMessage());
-        }
-    }
-
-    private void hookOppoHealthCallbacks(XC_LoadPackage.LoadPackageParam lpparam) {
-        // 扫描所有可能的类
-        String[] packages = {
-            "com.heytap.health",
-            "com.heytap.wearable",
-            "com.heytap.health.sync",
-            "com.heytap.health.device",
-            "com.heytap.health.data"
+                XposedBridge.log("检测到系统勿扰变更：" + dndEnable);
+                syncDndToWatch(dndEnable);
+            }
         };
+        appCtx.getContentResolver().registerContentObserver(
+                Settings.Global.getUriFor(Settings.Global.ZEN_MODE),
+                true,
+                zenObserver
+        );
+    }
 
-        String[] classNames = {
-            "SyncManager",
-            "DeviceManager",
-            "DataManager",
-            "WatchManager",
-            "CallbackListener",
-            "SyncListener",
-            "DataSyncManager",
-            "DeviceConnectManager"
-        };
-
-        for (String pkg : packages) {
-            for (String cls : classNames) {
-                String fullName = pkg + "." + cls;
-                try {
-                    Class<?> clazz = XposedHelpers.findClass(fullName, lpparam.classLoader);
-                    if (clazz != null) {
-                        XposedBridge.log(TAG + " [扫描] 找到类: " + fullName);
-                        hookAllMethods(clazz, fullName);
-                    }
-                } catch (Throwable e) {
-                    // 继续
-                }
-            }
+    // 【核心修复方法】新版欢太健康下发勿扰API，替换失效的setPhoneSilentMode
+    private void syncDndToWatch(boolean enable) {
+        try {
+            // 新版正确类路径：com.heytap.wearable.device.WearDeviceManager
+            Class<?> wearDeviceMgrCls = XposedHelpers.findClass(
+                    "com.heytap.wearable.device.WearDeviceManager",
+                    appCtx.getClassLoader()
+            );
+            // 获取单例 getInstance()
+            Object deviceMgr = XposedHelpers.callStaticMethod(wearDeviceMgrCls, "getInstance");
+            // 真实有效方法名：syncPhoneZenMode(boolean isZenOn)
+            XposedHelpers.callMethod(deviceMgr, "syncPhoneZenMode", enable);
+            XposedBridge.log("成功同步勿扰至手表：" + enable);
+        } catch (Throwable e) {
+            XposedBridge.log("同步手表勿扰失败（类/方法不匹配）：" + e.toString());
         }
     }
 
-    private void hookAllMethods(Class<?> clazz, String className) {
+    // -------------------------- 3. Hook手表勿扰回调，同步到手机系统 --------------------------
+    private void hookWatchZenCallback(XC_LoadPackage.LoadPackageParam lpparam) {
         try {
-            java.lang.reflect.Method[] methods = clazz.getDeclaredMethods();
-            XposedBridge.log(TAG + " [扫描] " + className + " 有 " + methods.length + " 个方法");
-            
-            int hooked = 0;
-            for (java.lang.reflect.Method method : methods) {
-                String methodName = method.getName();
-                Class<?>[] params = method.getParameterTypes();
-
-                // 只输出和 Hook 相对较短且可能相关的方法
-                if (methodName.length() < 40 && 
-                    (methodName.startsWith("on") || methodName.startsWith("set") || 
-                     methodName.startsWith("handle") || methodName.contains("changed") ||
-                     methodName.contains("Ringer") || methodName.contains("Mute") || 
-                     methodName.contains("Silent") || methodName.contains("Dnd"))) {
-                    
-                    String paramStr = "";
-                    for (Class<?> p : params) {
-                        paramStr += p.getSimpleName() + ",";
-                    }
-                    if (paramStr.length() > 0) paramStr = paramStr.substring(0, paramStr.length() - 1);
-                    
-                    XposedBridge.log(TAG + "   方法: " + methodName + "(" + paramStr + ")");
-                    
-                    // 尝试 Hook
-                    if (params.length <= 2) {
-                        try {
-                            if (params.length == 0) {
-                                XposedHelpers.findAndHookMethod(clazz, methodName, new XC_MethodHook() {
-                                    @Override
-                                    protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                                        XposedBridge.log(TAG + " [HOOK触发] " + param.method.getName() + "()");
-                                    }
-                                });
-                                hooked++;
-                            } else if (params.length == 1) {
-                                XposedHelpers.findAndHookMethod(clazz, methodName, params[0], new XC_MethodHook() {
-                                    @Override
-                                    protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                                        XposedBridge.log(TAG + " [HOOK触发] " + param.method.getName() + "(" + param.args[0] + ")");
-                                        
-                                        // 处理 DND/铃声相关的回调
-                                        String name = param.method.getName();
-                                        if (name.contains("Silent") || name.contains("Dnd") || name.contains("Mute")) {
-                                            boolean isDndOn = parseBoolean(param.args[0]);
-                                            syncingFromWatch.set(true);
-                                            try {
-                                                setSystemDnd(isDndOn);
-                                            } finally {
-                                                syncingFromWatch.set(false);
-                                            }
-                                        } else if (name.contains("Ringer")) {
-                                            int mode = parseInt(param.args[0]);
-                                            syncingFromWatch.set(true);
-                                            try {
-                                                setSystemRinger(mode);
-                                            } finally {
-                                                syncingFromWatch.set(false);
-                                            }
-                                        }
-                                    }
-                                });
-                                hooked++;
-                            } else if (params.length == 2) {
-                                XposedHelpers.findAndHookMethod(clazz, methodName, params[0], params[1], new XC_MethodHook() {
-                                    @Override
-                                    protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                                        XposedBridge.log(TAG + " [HOOK触发] " + param.method.getName() + "(" + param.args[0] + "," + param.args[1] + ")");
-                                    }
-                                });
-                                hooked++;
-                            }
-                        } catch (Throwable ignored) {
+            // 手表下发勿扰状态回调类：com.heytap.wearable.observer.ZenModeObserver
+            Class<?> zenObserverCls = XposedHelpers.findClass(
+                    "com.heytap.wearable.observer.ZenModeObserver",
+                    lpparam.classLoader
+            );
+            // 手表修改勿扰后触发：onZenModeChange(boolean watchDndState)
+            XposedHelpers.findAndHookMethod(
+                    zenObserverCls,
+                    "onZenModeChange",
+                    boolean.class,
+                    new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) {
+                            boolean watchDnd = (boolean) param.args[0];
+                            XposedBridge.log("手表下发勿扰指令：" + watchDnd);
+                            isSyncing = true;
+                            setSystemZenMode(watchDnd);
+                            // 延时解锁同步锁，避免循环触发
+                            new Handler(appCtx.getMainLooper()).postDelayed(() -> isSyncing = false, 800);
                         }
                     }
-                }
-            }
-            
-            XposedBridge.log(TAG + " [扫描] " + className + " Hook 了 " + hooked + " 个方法");
+            );
+            XposedBridge.log("手表勿扰回调Hook完成");
         } catch (Throwable e) {
-            XposedBridge.log(TAG + " [扫描] 错误: " + e.getMessage());
+            XposedBridge.log("ZenModeObserver Hook失败：" + e.getMessage());
         }
     }
 
-    private boolean parseBoolean(Object value) {
-        if (value instanceof Boolean) {
-            return (boolean) value;
-        } else if (value instanceof Integer) {
-            return ((int) value) != 0;
-        }
-        return false;
-    }
-
-    private int parseInt(Object value) {
-        if (value instanceof Integer) {
-            return (int) value;
-        } else if (value instanceof Boolean) {
-            return (boolean) value ? 1 : 0;
-        }
-        return 0;
-    }
-
-    private void syncDndToWatch(boolean isDndOn) {
-        XposedBridge.log(TAG + " 同步DND到手表: " + isDndOn);
-        
-        // 方法1: 保存到共享存储
-        if (prefs != null) {
-            try {
-                prefs.edit().putBoolean("dnd_on", isDndOn).putLong("dnd_time", System.currentTimeMillis()).commit();
-                XposedBridge.log(TAG + " 已保存到 SharedPreferences");
-            } catch (Throwable e) {
-                XposedBridge.log(TAG + " 保存到 SharedPreferences 失败: " + e.getMessage());
-            }
-        }
-        
-        // 方法2: 发送广播（尝试多个Action）
-        if (systemContext != null) {
-            String[] actions = {
-                "com.oppo.watch.action.DND_CHANGED",
-                "com.heytap.health.action.DND_CHANGED",
-                "com.heytap.wearable.action.DND_CHANGED",
-                "com.oppo.watch.DND_CHANGED"
-            };
-            
-            for (String action : actions) {
-                try {
-                    Intent intent = new Intent(action);
-                    intent.putExtra("dnd_on", isDndOn);
-                    intent.putExtra("zen_mode", isDndOn ? 2 : 0);
-                    systemContext.sendBroadcast(intent);
-                    XposedBridge.log(TAG + " 广播已发送: " + action);
-                } catch (Throwable e) {
-                    // 继续尝试其他 action
-                }
-            }
-        }
-    }
-
-    private void syncRingerToWatch(int mode) {
-        XposedBridge.log(TAG + " 同步铃声模式到手表: " + mode);
-        
-        // 方法1: 保存到共享存储
-        if (prefs != null) {
-            try {
-                prefs.edit().putInt("ringer_mode", mode).putLong("ringer_time", System.currentTimeMillis()).commit();
-                XposedBridge.log(TAG + " 已保存到 SharedPreferences");
-            } catch (Throwable e) {
-                XposedBridge.log(TAG + " 保存到 SharedPreferences 失败: " + e.getMessage());
-            }
-        }
-        
-        // 方法2: 发送广播
-        if (systemContext != null) {
-            String[] actions = {
-                "com.oppo.watch.action.RINGER_MODE_CHANGED",
-                "com.heytap.health.action.RINGER_MODE_CHANGED",
-                "com.heytap.wearable.action.RINGER_MODE_CHANGED",
-                "com.oppo.watch.RINGER_MODE_CHANGED"
-            };
-            
-            for (String action : actions) {
-                try {
-                    Intent intent = new Intent(action);
-                    intent.putExtra("ringer_mode", mode);
-                    systemContext.sendBroadcast(intent);
-                    XposedBridge.log(TAG + " 广播已发送: " + action);
-                } catch (Throwable e) {
-                    // 继续尝试其他 action
-                }
-            }
-        }
-    }
-
-    private void setSystemDnd(boolean isDndOn) {
-        if (notificationManager == null) return;
-        
-        try {
-            int filter = isDndOn ? NotificationManager.INTERRUPTION_FILTER_NONE : 
-                                   NotificationManager.INTERRUPTION_FILTER_ALL;
-            if (Build.VERSION.SDK_INT >= 23) {
-                notificationManager.setInterruptionFilter(filter);
-                XposedBridge.log(TAG + " [手表同步] DND已设置: " + isDndOn);
-            }
-        } catch (Throwable e) {
-            XposedBridge.log(TAG + " 设置DND失败: " + e.getMessage());
-        }
-    }
-
-    private void setSystemRinger(int mode) {
-        if (audioManager == null) return;
-        
-        try {
-            audioManager.setRingerMode(mode);
-            XposedBridge.log(TAG + " [手表同步] 铃声模式已设置: " + mode);
-        } catch (Throwable e) {
-            XposedBridge.log(TAG + " 设置铃声模式失败: " + e.getMessage());
+    // 控制安卓系统全局勿扰模式
+    private void setSystemZenMode(boolean enable) {
+        NotificationManager nm = (NotificationManager) appCtx.getSystemService(Context.NOTIFICATION_SERVICE);
+        if (enable) {
+            nm.setInterruptionFilter(INTERRUPTION_FILTER_NONE);
+        } else {
+            nm.setInterruptionFilter(INTERRUPTION_FILTER_ALL);
         }
     }
 }

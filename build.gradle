@@ -9,3 +9,10 @@ allprojects {
         maven { url 'https://api.xposed.info/' }
     }
 }
+
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}

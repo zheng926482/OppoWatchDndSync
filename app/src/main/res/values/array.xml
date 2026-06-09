@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string-array name="xposed_scope">
+        <item>com.heytap.wearable.health</item>
+        <item>com.oppo.watch</item>
+        <item>com.oppo.health</item>
+        <item>com.oplus.wearable.health</item>
+        <!-- 如果需要 Hook 系统框架，取消下一行的注释 -->
+        <!-- <item>android</item> -->
+    </string-array>
+</resources>

@@ -27,6 +27,8 @@ public class MainHook implements IXposedHookLoadPackage {
             "com.oppo.health",
             "com.oplus.wearable.health"
     };
+    private static final String ZEN_MODE = "zen_mode";
+    private static final int ZEN_MODE_OFF = 0;
 
     private Context appContext;
     private NotificationManager notificationManager;
@@ -80,13 +82,13 @@ public class MainHook implements IXposedHookLoadPackage {
     // 勿扰监听
     private void registerPhoneDndObserver() {
         ContentResolver resolver = appContext.getContentResolver();
-        Uri zenModeUri = Settings.Global.getUriFor(Settings.Global.ZEN_MODE);
+        Uri zenModeUri = Settings.Global.getUriFor(ZEN_MODE);
         ContentObserver observer = new ContentObserver(new Handler(Looper.getMainLooper())) {
             @Override
             public void onChange(boolean selfChange, Uri uri) {
                 if (syncingDndFromWatch.get()) return;
-                int zenMode = Settings.Global.getInt(resolver, Settings.Global.ZEN_MODE, Settings.Global.ZEN_MODE_OFF);
-                boolean isDndOn = (zenMode != Settings.Global.ZEN_MODE_OFF);
+                int zenMode = Settings.Global.getInt(resolver, ZEN_MODE, ZEN_MODE_OFF);
+                boolean isDndOn = (zenMode != ZEN_MODE_OFF);
                 XposedBridge.log(TAG + " 手机勿扰变化: " + isDndOn);
                 syncDndToWatch(isDndOn);
             }
@@ -164,7 +166,7 @@ public class MainHook implements IXposedHookLoadPackage {
         try {
             int filter = enable ? NotificationManager.INTERRUPTION_FILTER_NONE : NotificationManager.INTERRUPTION_FILTER_ALL;
             if (Build.VERSION.SDK_INT >= 23) notificationManager.setInterruptionFilter(filter);
-            else Settings.Global.putInt(appContext.getContentResolver(), Settings.Global.ZEN_MODE, enable ? 2 : 0);
+            else Settings.Global.putInt(appContext.getContentResolver(), ZEN_MODE, enable ? 2 : 0);
         } catch (Throwable e) {}
     }
 

@@ -18,15 +18,13 @@ public class MainHook implements IXposedHookLoadPackage {
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
-        XposedBridge.log("[OppoDndSync] 模块已加载");
-
         if (!lpparam.packageName.equals(TARGET_PKG)) {
             return;
         }
 
-        try {
-            XposedBridge.log("[OppoDndSync] 开始 Hook OPPO 健康");
+        XposedBridge.log("[OppoDndSync] 已成功挂载到 OPPO 健康");
 
+        try {
             Application app = (Application) XposedHelpers.callStaticMethod(
                 XposedHelpers.findClass("android.app.ActivityThread", null),
                 "currentApplication"
@@ -38,7 +36,7 @@ public class MainHook implements IXposedHookLoadPackage {
             hookWatchCommand(lpparam);
 
         } catch (Throwable e) {
-            XposedBridge.log("[OppoDndSync] 初始化失败: " + e.getMessage());
+            XposedBridge.log("[OppoDndSync] 初始化错误: " + e.getMessage());
         }
     }
 
@@ -52,6 +50,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam param) {
                     param.setResult(true);
+                    XposedBridge.log("[OppoDndSync] 已伪装成 OPPO 设备");
                 }
             });
         } catch (Throwable e) {
@@ -69,7 +68,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 int mode = nm.getCurrentInterruptionFilter();
                 boolean enabled = (mode == NotificationManager.INTERRUPTION_FILTER_NONE || mode == NotificationManager.INTERRUPTION_FILTER_ALARMS);
 
-                XposedBridge.log("[OppoDndSync] 手机勿扰: " + enabled);
+                XposedBridge.log("[OppoDndSync] 手机勿扰状态: " + enabled);
                 sendToWatch(enabled);
             }
         };
@@ -79,6 +78,7 @@ public class MainHook implements IXposedHookLoadPackage {
             true,
             observer
         );
+        XposedBridge.log("[OppoDndSync] 已监听手机勿扰");
     }
 
     private void sendToWatch(boolean enable) {
@@ -86,9 +86,9 @@ public class MainHook implements IXposedHookLoadPackage {
             Class<?> cls = XposedHelpers.findClass("com.heytap.wearable.device.WearDeviceManager", appContext.getClassLoader());
             Object manager = XposedHelpers.callStaticMethod(cls, "getInstance");
             XposedHelpers.callMethod(manager, "syncPhoneZenMode", enable);
-            XposedBridge.log("[OppoDndSync] 已发送到手表: " + enable);
+            XposedBridge.log("[OppoDndSync] 同步到手表: " + enable);
         } catch (Throwable e) {
-            XposedBridge.log("[OppoDndSync] 发送失败: " + e.toString());
+            XposedBridge.log("[OppoDndSync] 同步失败: " + e.toString());
         }
     }
 
@@ -106,6 +106,7 @@ public class MainHook implements IXposedHookLoadPackage {
                     new Handler(appContext.getMainLooper()).postDelayed(() -> syncFlag = false, 500);
                 }
             });
+            XposedBridge.log("[OppoDndSync] 已监听手表勿扰指令");
         } catch (Throwable e) {
             XposedBridge.log("[OppoDndSync] 手表监听失败: " + e.getMessage());
         }

@@ -1,10 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string-array name="xposed_scope">
+        <item>android</item>
+        <item>com.heytap.health</item>
         <item>com.heytap.wearable.health</item>
         <item>com.oppo.watch</item>
         <item>com.oppo.health</item>
         <item>com.oplus.wearable.health</item>
-        <item>android</item>
     </string-array>
 </resources>

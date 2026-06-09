@@ -4,29 +4,22 @@
 
     <application
         android:allowBackup="true"
-        android:icon="@mipmap/ic_launcher"
-        android:label="@string/app_name"
+        android:label="OppoWatchDndSync"
         android:supportsRtl="true">
 
-        <!-- Xposed核心配置，缺失会完全不加载模块、无日志 -->
         <meta-data
             android:name="xposedmodule"
             android:value="true" />
         <meta-data
             android:name="xposeddescription"
-            android:value="OPPO手表勿扰双向同步 - 非OPPO手机专用" />
+            android:value="OPPO Watch 勿扰双向同步" />
         <meta-data
             android:name="xposedminversion"
-            android:value="93" />
-        <!-- 强制指定Hook入口全类名，必加！ -->
+            android:value="82" />
         <meta-data
             android:name="xposedhook"
             android:value="com.oppowatch.dndsync.MainHook" />
 
     </application>
-
-    <!-- 必要权限，缺少会读取不到勿扰状态、无法修改系统勿扰 -->
-    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS" />
-    <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
 
 </manifest>

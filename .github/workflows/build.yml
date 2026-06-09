@@ -19,10 +19,8 @@ jobs:
         java-version: '11'
         distribution: 'temurin'
 
-    - name: Set up Android SDK
+    - name: Setup Android SDK
       uses: android-actions/setup-android@v3
-      with:
-        packages: 'platforms;android-33 build-tools;30.0.3'
 
     - name: Make gradlew executable
       run: chmod +x gradlew

@@ -5,7 +5,6 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.content.ContentResolver;
 import android.content.Context;
-import android.content.Intent;
 import android.database.ContentObserver;
 import android.media.AudioManager;
 import android.net.Uri;
@@ -34,7 +33,6 @@ public class MainHook implements IXposedHookLoadPackage {
     private NotificationManager notificationManager;
     private AudioManager audioManager;
     private AtomicBoolean syncingFromWatch = new AtomicBoolean(false);
-    private AtomicBoolean syncingFromPhone = new AtomicBoolean(false);
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
@@ -70,24 +68,24 @@ public class MainHook implements IXposedHookLoadPackage {
         notificationManager = (NotificationManager) appContext.getSystemService(Context.NOTIFICATION_SERVICE);
         audioManager = (AudioManager) appContext.getSystemService(Context.AUDIO_SERVICE);
 
-        // 监听手机勿扰模式变化 → 发送虚拟通知
         registerPhoneDndObserver();
-        // 监听手机铃声模式变化 → 发送虚拟通知
         registerRingerModeObserver();
-        // 尝试Hook手表端下发的指令（反向同步）
         hookWatchReverseSync(lpparam.classLoader);
     }
 
-    // 监听勿扰模式（Zen Mode）
     private void registerPhoneDndObserver() {
         ContentResolver resolver = appContext.getContentResolver();
-        Uri zenModeUri = Settings.Global.getUriFor(Settings.Global.ZEN_MODE);
+        // 使用字符串常量代替 Settings.Global.ZEN_MODE
+        Uri zenModeUri = Settings.Global.getUriFor("zen_mode");
+        if (zenModeUri == null) return;
+
         ContentObserver observer = new ContentObserver(new Handler(Looper.getMainLooper())) {
             @Override
             public void onChange(boolean selfChange, Uri uri) {
                 if (syncingFromWatch.get()) return;
-                int zenMode = Settings.Global.getInt(resolver, Settings.Global.ZEN_MODE, Settings.Global.ZEN_MODE_OFF);
-                boolean isDndOn = (zenMode != Settings.Global.ZEN_MODE_OFF);
+                // 读取 zen_mode 值：0关闭，1重要中断，2全部静音
+                int zenMode = Settings.Global.getInt(resolver, "zen_mode", 0);
+                boolean isDndOn = (zenMode != 0);
                 XposedBridge.log(TAG + " [手机] 勿扰模式变化: " + isDndOn);
                 sendVirtualNotification("勿扰模式", isDndOn ? "已开启" : "已关闭", 1001);
             }
@@ -96,12 +94,12 @@ public class MainHook implements IXposedHookLoadPackage {
         XposedBridge.log(TAG + " 已注册勿扰监听");
     }
 
-    // 监听铃声模式（静音/振动/正常）
     private void registerRingerModeObserver() {
+        if (audioManager == null) return;
         ContentResolver resolver = appContext.getContentResolver();
         Uri ringerUri = Settings.System.getUriFor(Settings.System.MODE_RINGER);
         if (ringerUri == null) {
-            XposedBridge.log(TAG + " 无法获取铃声模式URI，尝试替代方案");
+            XposedBridge.log(TAG + " 无法获取铃声模式URI");
             return;
         }
         ContentObserver observer = new ContentObserver(new Handler(Looper.getMainLooper())) {
@@ -123,7 +121,6 @@ public class MainHook implements IXposedHookLoadPackage {
         XposedBridge.log(TAG + " 已注册铃声监听");
     }
 
-    // 发送虚拟通知，触发健康APP同步到手表
     private void sendVirtualNotification(String title, String content, int id) {
         try {
             String channelId = "oppo_watch_sync";
@@ -146,16 +143,15 @@ public class MainHook implements IXposedHookLoadPackage {
                     .build();
             notificationManager.notify(id, notification);
             XposedBridge.log(TAG + " 已发送虚拟通知: " + title + " - " + content);
-            // 1秒后自动取消，避免堆积
+            // 1秒后自动取消
             new Handler(Looper.getMainLooper()).postDelayed(() -> notificationManager.cancel(id), 1000);
         } catch (Throwable e) {
             XposedBridge.log(TAG + " 发送虚拟通知失败: " + e.getMessage());
         }
     }
 
-    // 尝试Hook手表→手机的反向同步（需要逆向找到正确类/方法）
+    // 尝试 Hook 手表→手机的反向同步（需要根据实际APP调整类名/方法名）
     private void hookWatchReverseSync(ClassLoader classLoader) {
-        // 常见的类名可能性（需要你反编译后确认）
         String[] possibleClasses = {
             "com.heytap.wearable.device.DeviceManager",
             "com.oplus.wearable.provider.WatchStateProvider",
@@ -164,7 +160,6 @@ public class MainHook implements IXposedHookLoadPackage {
         for (String className : possibleClasses) {
             Class<?> clazz = XposedHelpers.findClassIfExists(className, classLoader);
             if (clazz != null) {
-                // 可能的方法名
                 String[] methods = {"onPhoneDndChanged", "onPhoneSilentModeChanged", "syncDndFromWatch"};
                 for (String method : methods) {
                     try {
@@ -187,15 +182,16 @@ public class MainHook implements IXposedHookLoadPackage {
         XposedBridge.log(TAG + " 未找到反向同步Hook点，手表→手机可能无法同步");
     }
 
-    // 设置手机勿扰模式（反向同步时调用）
     private void setSystemDndMode(boolean enable) {
         if (notificationManager == null) return;
         try {
-            int filter = enable ? NotificationManager.INTERRUPTION_FILTER_NONE : NotificationManager.INTERRUPTION_FILTER_ALL;
-            if (Build.VERSION.SDK_INT >= 23) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                int filter = enable ? NotificationManager.INTERRUPTION_FILTER_NONE
+                                    : NotificationManager.INTERRUPTION_FILTER_ALL;
                 notificationManager.setInterruptionFilter(filter);
             } else {
-                Settings.Global.putInt(appContext.getContentResolver(), Settings.Global.ZEN_MODE, enable ? 2 : 0);
+                // 低版本使用 Settings.Global
+                Settings.Global.putInt(appContext.getContentResolver(), "zen_mode", enable ? 2 : 0);
             }
             XposedBridge.log(TAG + " 已设置手机勿扰: " + enable);
         } catch (Throwable e) {
